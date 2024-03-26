@@ -6,6 +6,8 @@ from random import randrange
 from re import search as re_search
 from urllib.parse import parse_qs, urlparse
 
+from googleapiclient.http import build_http
+from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from tenacity import (retry, retry_if_exception_type,
@@ -33,7 +35,7 @@ class GoogleDriveHelper:
         self.sa_number = 100
         self.alt_auth = False
         self.listener = listener
-        self.service = self.authorize()
+        self.service = None
         self.name = name
         self.total_files = 0
         self.total_folders = 0
@@ -43,6 +45,7 @@ class GoogleDriveHelper:
         self.total_time = 0
         self.status = None
         self.update_interval = 3
+        self.use_sa = config_dict['USE_SERVICE_ACCOUNTS']
 
     @property
     def speed(self):
@@ -57,7 +60,7 @@ class GoogleDriveHelper:
 
     def authorize(self):
         credentials = None
-        if config_dict['USE_SERVICE_ACCOUNTS']:
+        if self.use_sa:
             json_files = listdir("accounts")
             self.sa_number = len(json_files)
             self.sa_index = randrange(self.sa_number)
@@ -70,18 +73,9 @@ class GoogleDriveHelper:
         else:
             LOGGER.error('token.pickle not found!')
             return
-        return build('drive', 'v3', credentials=credentials, cache_discovery=False)
-
-    def alt_authorize(self):
-        if not self.alt_auth:
-            self.alt_auth = True
-            if ospath.exists('token.pickle'):
-                LOGGER.info("Authorize with token.pickle")
-                with open('token.pickle', 'rb') as f:
-                    credentials = pload(f)
-                return build('drive', 'v3', credentials=credentials, cache_discovery=False)
-            else:
-                LOGGER.error('token.pickle not found!')
+        authorized_http = AuthorizedHttp(credentials, http=build_http())
+        authorized_http.http.disable_ssl_certificate_validation = True
+        return build("drive", "v3", http=authorized_http, cache_discovery=False)
 
     def switchServiceAccount(self):
         if self.sa_index == self.sa_number - 1:
@@ -122,6 +116,7 @@ class GoogleDriveHelper:
     @retry(wait=wait_exponential(multiplier=2, min=3, max=6), stop=stop_after_attempt(3),
            retry=retry_if_exception_type(Exception))
     def getFolderData(self, file_id):
+        self.service = self.authorize()
         try:
             meta = self.service.files().get(fileId=file_id, supportsAllDrives=True).execute()
             if meta.get('mimeType', '') == self.G_DRIVE_DIR_MIME_TYPE:
